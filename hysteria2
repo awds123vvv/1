@@ -26,7 +26,7 @@ on:
         default: false
 
 env:
-  MEMORY: 256M # 稳定内存配置
+  MEMORY: 128M # <<< 修正点：内存改为 128M，以进行最小化测试
 
 jobs:
   deploy:
@@ -44,15 +44,11 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y cf8-cli
 
-    - name: 根据输入选择Docker镜像
+    - name: 根据输入选择Docker镜像 (强制使用测试镜像)
       run: |
-        if [ "${{ github.event.inputs.is_direct_connect }}" = "true" ]; then
-          echo "已选择“直连镜像”，使用 ghcr.io/eooce/ws:latest"
-          echo "DOCKER_IMAGE=ghcr.io/eooce/ws:latest" >> $GITHUB_ENV
-        else
-          echo "未选择“直连镜像”，使用默认的 ghcr.io/eooce/nodejs:main"
-          echo "DOCKER_IMAGE=ghcr.io/eooce/nodejs:main" >> $GITHUB_ENV
-        fi
+        # 忽略用户输入，强制使用一个小型、稳定的测试镜像来诊断问题
+        echo "DOCKER_IMAGE=nginx:alpine" >> $GITHUB_ENV
+        echo "已强制使用测试镜像: nginx:alpine"
 
     - name: 生成应用名称并设置API端点
       run: |
@@ -106,11 +102,11 @@ jobs:
 
     - name: 部署应用 (不绑定路由)
       run: |
-        echo "开始部署应用: ${{ env.APP_NAME }}"
+        echo "开始部署测试应用: ${{ env.APP_NAME }}"
         echo "使用镜像: ${{ env.DOCKER_IMAGE }}"
         
-        # 修正：将 --timeout 180 替换为正确的 --app-start-timeout 180
-        cf push ${{ env.APP_NAME }} --docker-image ${{ env.DOCKER_IMAGE }} -m ${{ env.MEMORY }} --health-check-type port --no-route --no-start --app-start-timeout 180
+        # 使用 128M 内存和 --no-route 部署
+        cf push ${{ env.APP_NAME }} --docker-image ${{ env.DOCKER_IMAGE }} -m ${{ env.MEMORY }} --health-check-type port --no-route --no-start
 
     - name: 绑定域名并设置路由
       run: |
@@ -126,16 +122,19 @@ jobs:
         # 绑定应用到指定的域名
         cf map-route ${{ env.APP_NAME }} $CFIP_VALUE --hostname ${{ env.APP_NAME }}
 
-    - name: 设置环境变量
+    - name: 设置环境变量 (为后续启动做准备)
       run: |
         echo "为应用 ${{ env.APP_NAME }} 设置环境变量..."
+        
+        # 注意：即使是 Nginx 测试，我们也保留设置环境变量的步骤，以确保工作流的完整性
+        # 如果测试成功，回退时这些变量就是正确的
         
         cf set-env ${{ env.APP_NAME }} NAME "Hysteria2"
         cf set-env ${{ env.APP_NAME }} UUID "${{ secrets.UUID }}"
         cf set-env ${{ env.APP_NAME }} NEZHA_SERVER "${{ secrets.NEZHA_SERVER }}"
         cf set-env ${{ env.APP_NAME }} NEZHA_KEY "${{ secrets.NEZHA_KEY }}"
         cf set-env ${{ env.APP_NAME }} SUB_PATH "${{ secrets.SUB_PATH }}"
-        cf set-env ${{ env.APP_NAME }} CFPORT "8080" # 明确设置 CFPORT
+        cf set-env ${{ env.APP_NAME }} CFPORT "${{ secrets.CFPORT }}"
         cf set-env ${{ env.APP_NAME }} CHAT_ID "${{ secrets.CHAT_ID }}"
         cf set-env ${{ env.APP_NAME }} BOT_TOKEN "${{ secrets.BOT_TOKEN }}"
         cf set-env ${{ env.APP_NAME }} ARGO_PORT "${{ secrets.ARGO_PORT }}"
@@ -160,12 +159,11 @@ jobs:
         fi
         cf set-env ${{ env.APP_NAME }} CFIP "$CFIP_VALUE"
         
-        # Hysteria2 部署特有配置 (关键修正：端口设置为 8080)
+        # Hysteria2 部署特有配置
         cf set-env ${{ env.APP_NAME }} HYSTERIA2_SERVER_NAME "$CFIP_VALUE"
-        cf set-env ${{ env.APP_NAME }} HYSTERIA2_LISTEN_PORT 8080 
+        cf set-env ${{ env.APP_NAME }} HYSTERIA2_LISTEN_PORT 443
         cf set-env ${{ env.APP_NAME }} HYSTERIA2_PROTOCOL "websocket"
         
-        # 修正：保证 shell 语法完整
         if [ "${{ github.event.inputs.is_direct_connect }}" = "true" ]; then
           echo "已选择“直连镜像”模式，开始自动配置 DOMAIN 环境变量..."
           ROUTE=$(cf app ${{ env.APP_NAME }} | grep "routes:" | awk '{print $2}')
@@ -175,13 +173,13 @@ jobs:
           else
             echo "警告：未找到应用路由，无法自动设置 DOMAIN, 请在部署成功后手动将节点配置里的address、host和sni改为应用域名"
           fi
-        fi # <-- 结束外部 if 语句
+        fi
         
         echo "环境变量设置完成。"
 
     - name: 启动应用以应用环境变量
       run: |
-        echo "正在启动应用并应用所有环境变量..."
+        echo "正在启动测试应用并应用所有环境变量..."
         cf start ${{ env.APP_NAME }}
 
     - name: 详细部署信息
@@ -193,16 +191,18 @@ jobs:
         APP_URL=$(cf app ${{ env.APP_NAME }} | grep "routes:" | awk '{print $2}')
         
         echo "----------------------------------------"
-        echo "部署成功！详细信息如下："
-        echo "区域 (Region): ${{ github.event.inputs.region }}"
-        echo "组织 (ORG): ${{ env.SELECTED_ORG }}"
-        echo "空间 (SPACE): ${{ env.SELECTED_SPACE }}"
+        echo "测试部署结果："
         echo "应用名称 (App Name): ${{ env.APP_NAME }}"
         
         if [ -n "$APP_URL" ]; then
+          echo "状态：成功。您的 CF 环境是健康的！"
           echo "应用 URL (APP_URL): https://$APP_URL"
-          echo "Hysteria2 WS 地址: ws://${APP_URL}/websocket"
+          echo "您可以访问该 URL 看到 Nginx 的欢迎页面。"
+          echo "----------------------------------------"
+          echo "下一步：请将 DOCKER_IMAGE 恢复到 Hysteria2 镜像，并尝试部署一个更小、更兼容的 Hysteria2 镜像。"
         else
-          echo "部署过程中出现问题，未找到应用 URL。"
+          echo "状态：失败。即使是 Nginx 测试应用也未能启动。"
+          echo "----------------------------------------"
+          echo "下一步：这表明您的 SAP BTP 账户有我们无法解决的深层平台限制，您需要联系 SAP BTP 支持人员。"
         fi
         echo "----------------------------------------"
