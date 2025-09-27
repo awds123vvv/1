@@ -62,7 +62,7 @@ on:
         default: false
 
 env:
-  MEMORY: 256M # 保持 256M 内存配置，提高稳定性
+  MEMORY: 2048M # 保持 2048M 内存配置，提高稳定性
 
 jobs:
   deploy:
