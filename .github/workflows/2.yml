@@ -1,0 +1,207 @@
+name: 自动部署 SAP (SG(free) 极限重试)
+
+on:
+  workflow_dispatch:  # 只允许手动触发
+    inputs:
+      type:
+        description: '选择部署的节点类型'
+        required: true
+        default: 'Argo隧道CDN'
+        type: choice
+        options:
+          - ws直连
+          - xhttp直连
+          - Argo隧道CDN
+      app_name:
+        description: '应用名称（可选，留空则自动生成）'
+        required: false
+        default: ''
+
+env:
+  MEMORY: 256M
+  REGION_KEY: "SG(free)"
+  CF_API: "https://api.cf.ap21.hana.ondemand.com" # 新加坡 (Azure) API
+  MAX_ATTEMPTS: 50 # 最大部署尝试次数
+
+jobs:
+  deploy-app:
+    name: 部署 SG(free) 区域
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install CF CLI
+      run: |
+        # 安装 Cloud Foundry CLI v8
+        wget -q -O - https://packages.cloudfoundry.org/debian/cli.cloudfoundry.org.key | sudo gpg --dearmor -o /usr/share/keyrings/cloudfoundry-cli-archive-keyring.gpg
+        echo "deb [signed-by=/usr/share/keyrings/cloudfoundry-cli-archive-keyring.gpg] https://packages.cloudfoundry.org/debian stable main" | sudo tee /etc/apt/sources.list.d/cloudfoundry-cli.list
+        sudo apt-get update
+        sudo apt-get install -y cf8-cli
+
+    - name: Deploy and Loop until Success on SG(free) 🇸🇬
+      id: deploy_loop
+      run: |
+        ATTEMPTS=1
+        DEPLOY_SUCCESS=false
+        REGION_KEY="${{ env.REGION_KEY }}"
+        CF_API="${{ env.CF_API }}"
+        MAX_ATTEMPTS="${{ env.MAX_ATTEMPTS }}"
+        
+        # 确定 Docker 镜像
+        DOCKER_IMAGE=""
+        if [[ -n "${{ secrets.DOCKER_IMAGE }}" ]]; then
+          DOCKER_IMAGE="${{ secrets.DOCKER_IMAGE }}"
+        else
+          case "${{ github.event.inputs.type }}" in
+            "ws直连") DOCKER_IMAGE="ghcr.io/eooce/ws:latest" ;;
+            "xhttp直连") DOCKER_IMAGE="ghcr.io/eooce/goxhttp:latest" ;;
+            *) DOCKER_IMAGE="ghcr.io/eooce/nodejs:main" ;;
+          esac
+        fi
+        echo "DOCKER_IMAGE=$DOCKER_IMAGE" >> $GITHUB_ENV
+
+        # 确定应用名称前缀
+        if [ -n "${{ github.event.inputs.app_name }}" ]; then
+          BASE_APP_NAME="${{ github.event.inputs.app_name }}"
+        else
+          RANDOM_STR=$(head /dev/urandom | tr -dc 'a-z' | head -c 6)
+          BASE_APP_NAME="sap-$RANDOM_STR"
+        fi
+
+        # 主循环：尝试部署最多 50 次
+        while [ $ATTEMPTS -le $MAX_ATTEMPTS ] && [ "$DEPLOY_SUCCESS" = false ]; do
+            echo "--------------------------------------------------"
+            echo "尝试部署到 $REGION_KEY (第 $ATTEMPTS / $MAX_ATTEMPTS 次尝试)"
+            
+            # 为每次尝试生成新的应用名称
+            APP_NAME="${BASE_APP_NAME}-sg-${ATTEMPTS}"
+            echo "当前应用名称: $APP_NAME"
+            
+            # 1. 登录
+            if ! cf login -a "$CF_API" -u "${{ secrets.EMAIL }}" -p "${{ secrets.PASSWORD }}" --skip-ssl-validation; then
+                echo "❌ 登录失败。可能API端点有问题或凭证无效。"
+                break
+            fi
+            
+            # 2. 获取组织和空间，并重新登录
+            ORG=$(cf orgs | awk 'NR==4 {print $1}')
+            SPACE=$(cf spaces | awk 'NR==4 {print $1}')
+            
+            if [ -z "$ORG" ] || [ -z "$SPACE" ]; then
+                echo "❌ 无法获取组织/空间。"
+                break
+            fi
+            
+            # 使用正确的 org/space 重新登录
+            cf login -a "$CF_API" -u "${{ secrets.EMAIL }}" -p "${{ secrets.PASSWORD }}" -o "$ORG" -s "$SPACE" --skip-ssl-validation
+            
+            # 3. 部署应用 (使用 || true 避免脚本在 cf push 失败时立即退出)
+            if ! cf push "$APP_NAME" --docker-image "$DOCKER_IMAGE" -m ${{ env.MEMORY }} -k 256M --health-check-type port; then
+                # 部署失败处理 (通常是资源耗尽)
+                echo "❌ cf push 失败 (可能是资源耗尽)。**启动清理并重试**..."
+                cf delete "$APP_NAME" -f || true # 清理残留
+                ATTEMPTS=$((ATTEMPTS+1))
+                sleep 10 # 失败后稍作等待
+                continue # 进入下一次循环
+            fi
+            
+            # --------------------------------------------------
+            # 部署命令成功，继续配置和启动检查
+            # --------------------------------------------------
+            echo "✅ 部署命令成功。开始设置环境变量..."
+            
+            # 4. 设置环境变量
+            cf set-env "$APP_NAME" NAME "SAP"
+            cf set-env "$APP_NAME" UUID "${{ secrets.UUID }}"
+            cf set-env "$APP_NAME" NEZHA_SERVER "${{ secrets.NEZHA_SERVER }}"
+            cf set-env "$APP_NAME" NEZHA_PORT "${{ secrets.NEZHA_PORT }}"
+            cf set-env "$APP_NAME" NEZHA_KEY "${{ secrets.NEZHA_KEY }}"
+            cf set-env "$APP_NAME" ARGO_DOMAIN "${{ secrets.ARGO_DOMAIN }}"
+            cf set-env "$APP_NAME" ARGO_AUTH "${{ secrets.ARGO_AUTH }}"
+            cf set-env "$APP_NAME" SUB_PATH "${{ secrets.SUB_PATH }}"
+            cf set-env "$APP_NAME" CFIP "${{ secrets.CFIP || 'cf.877774.xyz' }}"
+            cf set-env "$APP_NAME" CFPORT "${{ secrets.CFPORT }}"
+            cf set-env "$APP_NAME" CHAT_ID "${{ secrets.CHAT_ID }}"
+            cf set-env "$APP_NAME" BOT_TOKEN "${{ secrets.BOT_TOKEN }}"
+            
+            # 如果是直连镜像，设置 DOMAIN
+            if [[ "$DOCKER_IMAGE" =~ (xhttp|goxhttp|ws) ]]; then
+              ROUTE=$(cf app "$APP_NAME" | grep "routes:" | awk '{print $2}')
+              if [ -n "$ROUTE" ]; then
+                cf set-env "$APP_NAME" DOMAIN "$ROUTE"
+              fi
+            fi
+            
+            # 5. 重启应用并检查状态
+            if ! cf restage "$APP_NAME"; then
+                echo "❌ 应用重启失败。**启动清理并重试**..."
+                cf delete "$APP_NAME" -f || true
+                ATTEMPTS=$((ATTEMPTS+1))
+                continue
+            fi
+            
+            echo "✅ 应用重启成功。等待运行状态..."
+            
+            # 检查运行状态 (最多等待 2.5 分钟)
+            STATUS_CHECKS=0
+            MAX_CHECKS=15 
+            APP_STATUS=""
+            
+            while [ "$APP_STATUS" != "running" ] && [ $STATUS_CHECKS -lt $MAX_CHECKS ]; do
+                sleep 10
+                APP_STATUS=$(cf app "$APP_NAME" | grep "state:" | awk '{print tolower($2)}')
+                
+                if [ "$APP_STATUS" = "running" ]; then
+                    DEPLOY_SUCCESS=true
+                    break
+                fi
+                if [ "$APP_STATUS" = "crashed" ] || [ "$APP_STATUS" = "failed" ]; then
+                    echo "❌ 应用状态为 $APP_STATUS，**启动失败。启动清理并重试**..."
+                    cf delete "$APP_NAME" -f || true
+                    break # 启动失败，跳出内部状态检查循环
+                fi
+                STATUS_CHECKS=$((STATUS_CHECKS+1))
+            done
+
+            if [ "$DEPLOY_SUCCESS" = true ]; then
+                echo "🎉🎉🎉 部署成功! 应用 $APP_NAME 正常运行。"
+                # 导出最终变量
+                echo "FINAL_APP_NAME=$APP_NAME" >> $GITHUB_ENV
+                echo "FINAL_ORG=$ORG" >> $GITHUB_ENV
+                echo "FINAL_SPACE=$SPACE" >> $GITHUB_ENV
+                break # 成功，退出主循环
+            else
+                # 如果是启动失败，增加尝试次数，进行下一次循环
+                ATTEMPTS=$((ATTEMPTS+1))
+            fi
+        done
+        
+        # 最终检查和退出
+        if [ "$DEPLOY_SUCCESS" = false ]; then
+            echo "🚨🚨🚨 经过 $MAX_ATTEMPTS 次尝试，SG(free) 区域部署最终失败。"
+            echo "伙计,没资源了,部署失败,请明天早上8:20至9:00再尝试部署。"
+            exit 1
+        fi
+
+    - name: 详细部署信息 (成功) 🎊
+      # 仅在部署成功，且 FINAL_APP_NAME 已设置时运行
+      if: success() && env.FINAL_APP_NAME != ''
+      run: |
+        echo "🚀 部署完成！详细信息如下："
+        echo "✅ 成功部署区域(Region): ${{ env.REGION_KEY }}"
+        echo "组织(ORG): ${{ env.FINAL_ORG }}"
+        echo "空间(SPACE): ${{ env.FINAL_SPACE }}"
+        echo "应用名称(App Name): ${{ env.FINAL_APP_NAME }}"
+
+        # 重新登录以确保环境正确
+        cf login -a ${{ env.CF_API }} -u "${{ secrets.EMAIL }}" -p "${{ secrets.PASSWORD }}" -o "${{ env.FINAL_ORG }}" -s "${{ env.FINAL_SPACE }}"
+
+        # 获取应用路由
+        ROUTE=$(cf app ${{ env.FINAL_APP_NAME }} | grep "routes:" | awk '{print $2}')
+        if [ -n "$ROUTE" ]; then
+          echo "应用 URL (APP_URL): https://$ROUTE"
+        else
+          echo "⚠️ 未找到应用路由，请检查部署状态。"
+        fi
