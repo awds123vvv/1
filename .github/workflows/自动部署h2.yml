@@ -26,7 +26,7 @@ on:
         default: false
 
 env:
-  MEMORY: 128M # <<< 修正点：内存改为 128M，以进行最小化测试
+  MEMORY: 128M # <<< 内存保持 128M
 
 jobs:
   deploy:
@@ -39,16 +39,21 @@ jobs:
 
     - name: 安装 CF CLI
       run: |
-        wget -q -O - https://packages.cloudfoundry.org/debian/cli.cloudfoundry.org.key | sudo apt-key add -
-        echo "deb https://packages.cloudfoundry.org/debian stable main" | sudo tee /etc/apt/sources.list.d/cloudfoundry-cli.list
+        # 简化 CF CLI 安装，使用官方推荐的现代方法
+        wget -q -O - https://packages.cloudfoundry.org/debian/cli.cloudfoundry.org.key | sudo gpg --dearmor -o /usr/share/keyrings/cli.cloudfoundry.org-keyring.gpg
+        echo "deb [signed-by=/usr/share/keyrings/cli.cloudfoundry.org-keyring.gpg] https://packages.cloudfoundry.org/debian stable main" | sudo tee /etc/apt/sources.list.d/cloudfoundry-cli.list
         sudo apt-get update
+        # 注意：这里继续使用 cf8-cli，以兼容原始脚本
         sudo apt-get install -y cf8-cli
 
-    - name: 根据输入选择Docker镜像 (强制使用测试镜像)
+    - name: 根据输入选择Docker镜像 (部署 Hysteria2) # <<< 修正点：将强制测试改为部署正式镜像
       run: |
-        # 忽略用户输入，强制使用一个小型、稳定的测试镜像来诊断问题
-        echo "DOCKER_IMAGE=nginx:alpine" >> $GITHUB_ENV
-        echo "已强制使用测试镜像: nginx:alpine"
+        # !!! 重要的修正：请将 'your-hysteria2-docker-image:latest' 替换为您实际使用的 Hysteria2 镜像地址 !!!
+        # Hysteria2 镜像需要确保兼容 Cloud Foundry 的端口和健康检查机制
+        HYSTERIA2_IMAGE="your-hysteria2-docker-image:latest" 
+        
+        echo "DOCKER_IMAGE=$HYSTERIA2_IMAGE" >> $GITHUB_ENV
+        echo "已切换为正式部署 Hysteria2 镜像: $HYSTERIA2_IMAGE"
 
     - name: 生成应用名称并设置API端点
       run: |
@@ -102,7 +107,7 @@ jobs:
 
     - name: 部署应用 (不绑定路由)
       run: |
-        echo "开始部署测试应用: ${{ env.APP_NAME }}"
+        echo "开始部署 Hysteria2 应用: ${{ env.APP_NAME }}"
         echo "使用镜像: ${{ env.DOCKER_IMAGE }}"
         
         # 使用 128M 内存和 --no-route 部署
@@ -122,12 +127,9 @@ jobs:
         # 绑定应用到指定的域名
         cf map-route ${{ env.APP_NAME }} $CFIP_VALUE --hostname ${{ env.APP_NAME }}
 
-    - name: 设置环境变量 (为后续启动做准备)
+    - name: 设置环境变量
       run: |
-        echo "为应用 ${{ env.APP_NAME }} 设置环境变量..."
-        
-        # 注意：即使是 Nginx 测试，我们也保留设置环境变量的步骤，以确保工作流的完整性
-        # 如果测试成功，回退时这些变量就是正确的
+        echo "为应用 ${{ env.APP_NAME }} 设置 Hysteria2 及其辅助服务的环境变量..."
         
         cf set-env ${{ env.APP_NAME }} NAME "Hysteria2"
         cf set-env ${{ env.APP_NAME }} UUID "${{ secrets.UUID }}"
@@ -142,8 +144,10 @@ jobs:
         # 处理 ARGO_AUTH
         if echo "${{ secrets.ARGO_AUTH }}" | grep -q '\n'; then
           echo "检测到组合格式的 ARGO_AUTH，将自动解析域名和Token..."
-          ARGO_DOMAIN_VALUE=$(echo "${{ secrets.ARGO_AUTH }}" | head -n 1)
-          ARGO_AUTH_VALUE=$(echo "${{ secrets.ARGO_AUTH }}" | tail -n +2)
+          # 使用更安全的脚本处理多行输入
+          ARGO_AUTH_FULL="${{ secrets.ARGO_AUTH }}"
+          ARGO_DOMAIN_VALUE=$(echo "$ARGO_AUTH_FULL" | head -n 1)
+          ARGO_AUTH_VALUE=$(echo "$ARGO_AUTH_FULL" | tail -n +2)
           cf set-env ${{ env.APP_NAME }} ARGO_DOMAIN "$ARGO_DOMAIN_VALUE"
           cf set-env ${{ env.APP_NAME }} ARGO_AUTH "$ARGO_AUTH_VALUE"
         else
@@ -179,7 +183,7 @@ jobs:
 
     - name: 启动应用以应用环境变量
       run: |
-        echo "正在启动测试应用并应用所有环境变量..."
+        echo "正在启动 Hysteria2 应用并应用所有环境变量..."
         cf start ${{ env.APP_NAME }}
 
     - name: 详细部署信息
@@ -191,18 +195,17 @@ jobs:
         APP_URL=$(cf app ${{ env.APP_NAME }} | grep "routes:" | awk '{print $2}')
         
         echo "----------------------------------------"
-        echo "测试部署结果："
+        echo "Hysteria2 部署结果："
         echo "应用名称 (App Name): ${{ env.APP_NAME }}"
         
         if [ -n "$APP_URL" ]; then
-          echo "状态：成功。您的 CF 环境是健康的！"
+          echo "状态：成功。Hysteria2 节点可能已启动！"
           echo "应用 URL (APP_URL): https://$APP_URL"
-          echo "您可以访问该 URL 看到 Nginx 的欢迎页面。"
-          echo "----------------------------------------"
-          echo "下一步：请将 DOCKER_IMAGE 恢复到 Hysteria2 镜像，并尝试部署一个更小、更兼容的 Hysteria2 镜像。"
+          echo "您的 Hysteria2 配置节点地址应该为: $APP_URL"
+          echo "请检查 CF 日志 (cf logs ${{ env.APP_NAME }} --recent) 确认 Hysteria2 服务是否正常运行。"
         else
-          echo "状态：失败。即使是 Nginx 测试应用也未能启动。"
+          echo "状态：部署失败。即使启动指令已发送，应用仍然没有可访问的路由。"
           echo "----------------------------------------"
-          echo "下一步：这表明您的 SAP BTP 账户有我们无法解决的深层平台限制，您需要联系 SAP BTP 支持人员。"
+          echo "请检查应用日志 (cf logs ${{ env.APP_NAME }} --recent) 诊断启动失败的原因。"
         fi
         echo "----------------------------------------"
