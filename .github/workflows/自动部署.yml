@@ -1,4 +1,4 @@
-name: 自动部署 SAP
+name: 自动部署 SAP (US(free) 极限重试)
 
 on:
   workflow_dispatch:  # 只允许手动触发
@@ -12,47 +12,6 @@ on:
           - ws直连
           - xhttp直连
           - Argo隧道CDN
-      region:
-        description: '选择部署区域'
-        required: true
-        default: 'US(free)'
-        type: choice
-        options:
-          #  免费区域
-          - SG(free)  # azure新加披
-          - US(free)  # aws美国    
-          # AWS 区域
-          - AWS-AU(Sydney)
-          - AWS-BR(São Paulo)
-          - AWS-KR(Seoul)
-          - AWS-CA(Montreal)
-          - AWS-US(VA)
-          - AWS-US(OR)
-          - AWS-EU(Frankfurt)
-          - AWS-JP(Tokyo)
-          - AWS-SG(Singapore)
-          # GCP 区域
-          - GCP-AU(Sydney)
-          - GCP-BR(São Paulo)
-          - GCP-US(IA)
-          - GCP-EU(Frankfurt)
-          - GCP-JP(Osaka)
-          - GCP-JP(Tokyo)
-          - GCP-IL(Tel Aviv)
-          - GCP-IN(Mumbai)
-          - GCP-KSA(Dammam)
-          # Azure 区域
-          - Azure-AU(Sydney)
-          - Azure-BR(São Paulo)
-          - Azure-CA(Montreal)
-          - Azure-US(VA)
-          - Azure-US(WA)
-          - Azure-EU(Netherlands)
-          - Azure-JP(Tokyo)
-          - Azure-SG(Singapore)
-          # SAP Neo 区域
-          - Neo-UAE(Dubai)
-          - Neo-KSA(Riyadh)
       app_name:
         description: '应用名称（可选，留空则自动生成）'
         required: false
@@ -60,9 +19,13 @@ on:
 
 env:
   MEMORY: 256M
+  REGION_KEY: "US(free)"
+  CF_API: "https://api.cf.us10-001.hana.ondemand.com"
+  MAX_ATTEMPTS: 50 # 增加最大部署尝试次数到 50 次
 
 jobs:
   deploy-app:
+    name: 部署 US(free) 区域
     runs-on: ubuntu-latest
 
     steps:
@@ -71,253 +34,170 @@ jobs:
 
     - name: Install CF CLI
       run: |
-        wget -q -O - https://packages.cloudfoundry.org/debian/cli.cloudfoundry.org.key | sudo apt-key add -
-        echo "deb https://packages.cloudfoundry.org/debian stable main" | sudo tee /etc/apt/sources.list.d/cloudfoundry-cli.list
+        # 安装 Cloud Foundry CLI v8
+        wget -q -O - https://packages.cloudfoundry.org/debian/cli.cloudfoundry.org.key | sudo gpg --dearmor -o /usr/share/keyrings/cloudfoundry-cli-archive-keyring.gpg
+        echo "deb [signed-by=/usr/share/keyrings/cloudfoundry-cli-archive-keyring.gpg] https://packages.cloudfoundry.org/debian stable main" | sudo tee /etc/apt/sources.list.d/cloudfoundry-cli.list
         sudo apt-get update
         sudo apt-get install -y cf8-cli
 
-    - name: Determine CF API endpoint and app name
+    - name: Deploy and Loop until Success on US(free) 🇺🇸
+      id: deploy_loop
       run: |
-        # 设置API端点和生成随机字符串
-        RANDOM_STR=$(head /dev/urandom | tr -dc 'a-z' | head -c 6)
+        ATTEMPTS=1
+        DEPLOY_SUCCESS=false
         
-        case "${{ github.event.inputs.region }}" in
-          # 免费区域
-          "SG(free)")
-            echo "CF_API=https://api.cf.ap21.hana.ondemand.com" >> $GITHUB_ENV
-            echo "APP_NAME=free-sg$RANDOM_STR" >> $GITHUB_ENV
-            ;;
-          "US(free)")
-            echo "CF_API=https://api.cf.us10-001.hana.ondemand.com" >> $GITHUB_ENV
-            echo "APP_NAME=free-us$RANDOM_STR" >> $GITHUB_ENV
-            ;;
-          # AWS 区域
-          "AWS-AU(Sydney)")
-            echo "CF_API=https://api.cf.ap10.hana.ondemand.com" >> $GITHUB_ENV
-            echo "APP_NAME=aws-au$RANDOM_STR" >> $GITHUB_ENV
-            ;;
-          "AWS-BR(São Paulo)")
-            echo "CF_API=https://api.cf.br10.hana.ondemand.com" >> $GITHUB_ENV
-            echo "APP_NAME=aws-br$RANDOM_STR" >> $GITHUB_ENV
-            ;;
-          "AWS-KR(Seoul)")
-            echo "CF_API=https://api.cf.ap12.hana.ondemand.com" >> $GITHUB_ENV
-            echo "APP_NAME=aws-kr$RANDOM_STR" >> $GITHUB_ENV
-            ;;
-          "AWS-CA(Montreal)")
-            echo "CF_API=https://api.cf.ca10.hana.ondemand.com" >> $GITHUB_ENV
-            echo "APP_NAME=aws-ca$RANDOM_STR" >> $GITHUB_ENV
-            ;;
-          "AWS-US(VA)")
-            echo "CF_API=https://api.cf.us10-001.hana.ondemand.com" >> $GITHUB_ENV
-            echo "APP_NAME=aws-usva$RANDOM_STR" >> $GITHUB_ENV
-            ;;
-          "AWS-US(OR)")
-            echo "CF_API=https://api.cf.us11.hana.ondemand.com" >> $GITHUB_ENV
-            echo "APP_NAME=aws-usor$RANDOM_STR" >> $GITHUB_ENV
-            ;;
-          "AWS-EU(Frankfurt)")
-            echo "CF_API=https://api.cf.eu10-005.hana.ondemand.com" >> $GITHUB_ENV
-            echo "APP_NAME=aws-eu$RANDOM_STR" >> $GITHUB_ENV
-            ;;
-          "AWS-JP(Tokyo)")
-            echo "CF_API=https://api.cf.jp10.hana.ondemand.com" >> $GITHUB_ENV
-            echo "APP_NAME=aws-jp$RANDOM_STR" >> $GITHUB_ENV
-            ;;
-          "AWS-SG(Singapore)")
-            echo "CF_API=https://api.cf.ap11.hana.ondemand.com" >> $GITHUB_ENV
-            echo "APP_NAME=aws-sg$RANDOM_STR" >> $GITHUB_ENV
-            ;;
-          
-          # GCP 区域
-          "GCP-AU(Sydney)")
-            echo "CF_API=https://api.cf.ap30.hana.ondemand.com" >> $GITHUB_ENV
-            echo "APP_NAME=gcp-au$RANDOM_STR" >> $GITHUB_ENV
-            ;;
-          "GCP-BR(São Paulo)")
-            echo "CF_API=https://api.cf.br30.hana.ondemand.com" >> $GITHUB_ENV
-            echo "APP_NAME=gcp-br$RANDOM_STR" >> $GITHUB_ENV
-            ;;
-          "GCP-US(IA)")
-            echo "CF_API=https://api.cf.us30.hana.ondemand.com" >> $GITHUB_ENV
-            echo "APP_NAME=gcp-us$RANDOM_STR" >> $GITHUB_ENV
-            ;;
-          "GCP-EU(Frankfurt)")
-            echo "CF_API=https://api.cf.eu30.hana.ondemand.com" >> $GITHUB_ENV
-            echo "APP_NAME=gcp-eu$RANDOM_STR" >> $GITHUB_ENV
-            ;;
-          "GCP-JP(Osaka)")
-            echo "CF_API=https://api.cf.jp30.hana.ondemand.com" >> $GITHUB_ENV
-            echo "APP_NAME=gcp-jpo$RANDOM_STR" >> $GITHUB_ENV
-            ;;
-          "GCP-JP(Tokyo)")
-            echo "CF_API=https://api.cf.jp31.hana.ondemand.com" >> $GITHUB_ENV
-            echo "APP_NAME=gcp-jpt$RANDOM_STR" >> $GITHUB_ENV
-            ;;
-          "GCP-IL(Tel Aviv)")
-            echo "CF_API=https://api.cf.il30.hana.ondemand.com" >> $GITHUB_ENV
-            echo "APP_NAME=gcp-il$RANDOM_STR" >> $GITHUB_ENV
-            ;;
-          "GCP-IN(Mumbai)")
-            echo "CF_API=https://api.cf.in30.hana.ondemand.com" >> $GITHUB_ENV
-            echo "APP_NAME=gcp-in$RANDOM_STR" >> $GITHUB_ENV
-            ;;
-          "GCP-KSA(Dammam)")
-            echo "CF_API=https://api.cf.sa31.hana.ondemand.com" >> $GITHUB_ENV
-            echo "APP_NAME=gcp-sa$RANDOM_STR" >> $GITHUB_ENV
-            ;;
-          
-          # Azure 区域
-          "Azure-AU(Sydney)")
-            echo "CF_API=https://api.cf.ap20.hana.ondemand.com" >> $GITHUB_ENV
-            echo "APP_NAME=az-au$RANDOM_STR" >> $GITHUB_ENV
-            ;;
-          "Azure-BR(São Paulo)")
-            echo "CF_API=https://api.cf.br20.hana.ondemand.com" >> $GITHUB_ENV
-            echo "APP_NAME=az-br$RANDOM_STR" >> $GITHUB_ENV
-            ;;
-          "Azure-CA(Montreal)")
-            echo "CF_API=https://api.cf.ca20.hana.ondemand.com" >> $GITHUB_ENV
-            echo "APP_NAME=az-ca$RANDOM_STR" >> $GITHUB_ENV
-            ;;
-          "Azure-US(VA)")
-            echo "CF_API=https://api.cf.us21.hana.ondemand.com" >> $GITHUB_ENV
-            echo "APP_NAME=az-va$RANDOM_STR" >> $GITHUB_ENV
-            ;;
-          "Azure-US(WA)")
-            echo "CF_API=https://api.cf.us20.hana.ondemand.com" >> $GITHUB_ENV
-            echo "APP_NAME=az-wa$RANDOM_STR" >> $GITHUB_ENV
-            ;;
-          "Azure-EU(Netherlands)")
-            echo "CF_API=https://api.cf.eu20.hana.ondemand.com" >> $GITHUB_ENV
-            echo "APP_NAME=az-eu$RANDOM_STR" >> $GITHUB_ENV
-            ;;
-          "Azure-JP(Tokyo)")
-            echo "CF_API=https://api.cf.jp20.hana.ondemand.com" >> $GITHUB_ENV
-            echo "APP_NAME=az-jp$RANDOM_STR" >> $GITHUB_ENV
-            ;;
-          "Azure-SG(Singapore)")
-            echo "CF_API=https://api.cf.ap21.hana.ondemand.com" >> $GITHUB_ENV
-            echo "APP_NAME=az-sg$RANDOM_STR" >> $GITHUB_ENV
-            ;;
-          
-          # SAP Neo 区域
-          "Neo-UAE(Dubai)")
-            echo "CF_API=https://api.cf.neo-ae1.hana.ondemand.com" >> $GITHUB_ENV
-            echo "APP_NAME=neo-uae$RANDOM_STR" >> $GITHUB_ENV
-            ;;
-          "Neo-KSA(Riyadh)")
-            echo "CF_API=https://api.cf.neo-sa1.hana.ondemand.com" >> $GITHUB_ENV
-            echo "APP_NAME=neo-ksa$RANDOM_STR" >> $GITHUB_ENV
-            ;;
-        esac
-        
-        # 如果用户提供了应用名称，则使用用户提供的
-        if [ -n "${{ github.event.inputs.app_name }}" ]; then
-          echo "APP_NAME=${{ github.event.inputs.app_name }}" >> $GITHUB_ENV
-        fi
-        
-        # 如果自定义了docker镜像变量则使用定义的，否则按照选择的
+        # 确定 Docker 镜像
+        DOCKER_IMAGE=""
         if [[ -n "${{ secrets.DOCKER_IMAGE }}" ]]; then
-          echo "DOCKER_IMAGE=${{ secrets.DOCKER_IMAGE }}" >> $GITHUB_ENV
+          DOCKER_IMAGE="${{ secrets.DOCKER_IMAGE }}"
         else
-          if [ "${{ github.event.inputs.type }}" = "ws直连" ]; then
-            echo "DOCKER_IMAGE=ghcr.io/eooce/ws:latest" >> $GITHUB_ENV
-          elif [ "${{ github.event.inputs.type }}" = "xhttp直连" ]; then
-            echo "DOCKER_IMAGE=ghcr.io/eooce/goxhttp:latest" >> $GITHUB_ENV
-          else 
-            echo "DOCKER_IMAGE=ghcr.io/eooce/nodejs:main" >> $GITHUB_ENV
-          fi
+          case "${{ github.event.inputs.type }}" in
+            "ws直连") DOCKER_IMAGE="ghcr.io/eooce/ws:latest" ;;
+            "xhttp直连") DOCKER_IMAGE="ghcr.io/eooce/goxhttp:latest" ;;
+            *) DOCKER_IMAGE="ghcr.io/eooce/nodejs:main" ;;
+          esac
         fi
-        
-        echo "使用API端点: $CF_API"
-        echo "应用名称: $APP_NAME"
-        echo "部署类型: ${{ env.DOCKER_IMAGE }}"
+        echo "DOCKER_IMAGE=$DOCKER_IMAGE" >> $GITHUB_ENV
 
-    - name: Login to Cloud Foundry
-      run: |
-        cf login -a ${{ env.CF_API }} -u "${{ secrets.EMAIL }}" -p "${{ secrets.PASSWORD }}"
-
-        # 获取组织列表
-        ORG=$(cf orgs | sed -n '4p')
-        echo "Selected org: $ORG"
-        echo "ORG=$ORG" >> $GITHUB_ENV
-
-        # 获取空间列表
-        SPACE=$(cf spaces | sed -n '4p')
-        echo "Selected space: $SPACE"
-        echo "SPACE=$SPACE" >> $GITHUB_ENV
-
-        # 使用获取的组织和空间重新登录
-        cf login -a ${{ env.CF_API }} -u "${{ secrets.EMAIL }}" -p "${{ secrets.PASSWORD }}" -o "$ORG" -s "$SPACE"
-
-    - name: Deploy application
-      run: |
-        if cf push ${{ env.APP_NAME }} --docker-image ${{ env.DOCKER_IMAGE }} -m ${{ env.MEMORY }} -k 256M --health-check-type port; then
-          echo "Deployment successful"
+        # 确定应用名称前缀
+        if [ -n "${{ github.event.inputs.app_name }}" ]; then
+          BASE_APP_NAME="${{ github.event.inputs.app_name }}"
         else
-          cf delete ${{ env.APP_NAME }} -f
-          echo "伙计,没资源了,部署失败,请明天早上8:20至9:00再尝试部署,已清理失败部署残留"
-          exit 1
+          RANDOM_STR=$(head /dev/urandom | tr -dc 'a-z' | head -c 6)
+          BASE_APP_NAME="sap-$RANDOM_STR"
         fi
-        
-    - name: Set environment variables
-      run: |
-        # 基础环境变量
-        cf set-env ${{ env.APP_NAME }} NAME "SAP"
-        cf set-env ${{ env.APP_NAME }} UUID "${{ secrets.UUID }}"
-        cf set-env ${{ env.APP_NAME }} NEZHA_SERVER "${{ secrets.NEZHA_SERVER }}"
-        cf set-env ${{ env.APP_NAME }} NEZHA_PORT "${{ secrets.NEZHA_PORT }}"
-        cf set-env ${{ env.APP_NAME }} NEZHA_KEY "${{ secrets.NEZHA_KEY }}"
-        cf set-env ${{ env.APP_NAME }} ARGO_DOMAIN "${{ secrets.ARGO_DOMAIN }}"
-        cf set-env ${{ env.APP_NAME }} ARGO_AUTH "${{ secrets.ARGO_AUTH }}"
-        cf set-env ${{ env.APP_NAME }} SUB_PATH "${{ secrets.SUB_PATH }}"
-        cf set-env ${{ env.APP_NAME }} CFIP "${{ secrets.CFIP || 'cf.877774.xyz' }}"
-        cf set-env ${{ env.APP_NAME }} CFPORT "${{ secrets.CFPORT }}"
-        cf set-env ${{ env.APP_NAME }} CHAT_ID "${{ secrets.CHAT_ID }}"
-        cf set-env ${{ env.APP_NAME }} BOT_TOKEN "${{ secrets.BOT_TOKEN }}"
 
-        # 可选：从文件读取环境变量(如果存在)
-        if [ -f .env ]; then
-          while IFS= read -r line; do
-            if [[ ! "$line" =~ ^# ]] && [[ -n "$line" ]]; then
-              IFS='=' read -r key value <<< "$line"
-              cf set-env ${{ env.APP_NAME }} "$key" "$value"
+        # 主循环：尝试部署最多 ${{ env.MAX_ATTEMPTS }} 次
+        while [ $ATTEMPTS -le ${{ env.MAX_ATTEMPTS }} ] && [ "$DEPLOY_SUCCESS" = false ]; do
+            echo "--------------------------------------------------"
+            echo "尝试部署到 ${{ env.REGION_KEY }} (第 $ATTEMPTS / ${{ env.MAX_ATTEMPTS }} 次尝试)"
+            
+            # 为每次尝试生成新的应用名称 (防止名称冲突)
+            APP_NAME="${BASE_APP_NAME}-us-${ATTEMPTS}"
+            echo "当前应用名称: $APP_NAME"
+            
+            # 1. 登录
+            if ! cf login -a ${{ env.CF_API }} -u "${{ secrets.EMAIL }}" -p "${{ secrets.PASSWORD }}" --skip-ssl-validation; then
+                echo "❌ 登录失败。可能API端点有问题或凭证无效。"
+                break # 登录失败，退出循环
             fi
-          done < .env
-        fi
+            
+            # 2. 获取组织和空间，并重新登录
+            ORG=$(cf orgs | awk 'NR==4 {print $1}')
+            SPACE=$(cf spaces | awk 'NR==4 {print $1}')
+            
+            if [ -z "$ORG" ] || [ -z "$SPACE" ]; then
+                echo "❌ 无法获取组织/空间。"
+                break
+            fi
+            
+            # 使用正确的 org/space 重新登录
+            cf login -a ${{ env.CF_API }} -u "${{ secrets.EMAIL }}" -p "${{ secrets.PASSWORD }}" -o "$ORG" -s "$SPACE" --skip-ssl-validation
+            
+            # 3. 部署应用 (使用 || true 避免脚本在 cf push 失败时立即退出)
+            if ! cf push "$APP_NAME" --docker-image "$DOCKER_IMAGE" -m ${{ env.MEMORY }} -k 256M --health-check-type port; then
+                # 部署失败处理 (通常是资源耗尽)
+                echo "❌ cf push 失败 (可能是资源耗尽)。**启动清理并重试**..."
+                cf delete "$APP_NAME" -f || true # 清理残留
+                ATTEMPTS=$((ATTEMPTS+1))
+                sleep 10 # 失败后稍作等待
+                continue # 进入下一次循环
+            fi
+            
+            # --------------------------------------------------
+            # 部署命令成功，继续配置和启动检查
+            # --------------------------------------------------
+            echo "✅ 部署命令成功。开始设置环境变量..."
+            
+            # 4. 设置环境变量
+            cf set-env "$APP_NAME" NAME "SAP"
+            cf set-env "$APP_NAME" UUID "${{ secrets.UUID }}"
+            cf set-env "$APP_NAME" NEZHA_SERVER "${{ secrets.NEZHA_SERVER }}"
+            cf set-env "$APP_NAME" NEZHA_PORT "${{ secrets.NEZHA_PORT }}"
+            cf set-env "$APP_NAME" NEZHA_KEY "${{ secrets.NEZHA_KEY }}"
+            cf set-env "$APP_NAME" ARGO_DOMAIN "${{ secrets.ARGO_DOMAIN }}"
+            cf set-env "$APP_NAME" ARGO_AUTH "${{ secrets.ARGO_AUTH }}"
+            cf set-env "$APP_NAME" SUB_PATH "${{ secrets.SUB_PATH }}"
+            cf set-env "$APP_NAME" CFIP "${{ secrets.CFIP || 'cf.877774.xyz' }}"
+            cf set-env "$APP_NAME" CFPORT "${{ secrets.CFPORT }}"
+            cf set-env "$APP_NAME" CHAT_ID "${{ secrets.CHAT_ID }}"
+            cf set-env "$APP_NAME" BOT_TOKEN "${{ secrets.BOT_TOKEN }}"
+            
+            # 如果是直连镜像，设置 DOMAIN
+            if [[ "$DOCKER_IMAGE" =~ (xhttp|goxhttp|ws) ]]; then
+              ROUTE=$(cf app "$APP_NAME" | grep "routes:" | awk '{print $2}')
+              if [ -n "$ROUTE" ]; then
+                cf set-env "$APP_NAME" DOMAIN "$ROUTE"
+              fi
+            fi
+            
+            # 5. 重启应用并检查状态
+            if ! cf restage "$APP_NAME"; then
+                echo "❌ 应用重启失败。**启动清理并重试**..."
+                cf delete "$APP_NAME" -f || true
+                ATTEMPTS=$((ATTEMPTS+1))
+                continue
+            fi
+            
+            echo "✅ 应用重启成功。等待运行状态..."
+            
+            # 检查运行状态 (最多等待 2.5 分钟)
+            STATUS_CHECKS=0
+            MAX_CHECKS=15 
+            APP_STATUS=""
+            
+            while [ "$APP_STATUS" != "running" ] && [ $STATUS_CHECKS -lt $MAX_CHECKS ]; do
+                sleep 10
+                APP_STATUS=$(cf app "$APP_NAME" | grep "state:" | awk '{print tolower($2)}')
+                
+                if [ "$APP_STATUS" = "running" ]; then
+                    DEPLOY_SUCCESS=true
+                    break
+                fi
+                if [ "$APP_STATUS" = "crashed" ] || [ "$APP_STATUS" = "failed" ]; then
+                    echo "❌ 应用状态为 $APP_STATUS，**启动失败。启动清理并重试**..."
+                    cf delete "$APP_NAME" -f || true
+                    break # 启动失败，跳出内部状态检查循环
+                fi
+                STATUS_CHECKS=$((STATUS_CHECKS+1))
+            done
 
-        # 如果 DOCKER_IMAGE 中否包含 xhttp、goxhttp、ws 等关键词说明为直连镜像
-        if [[ "${{ env.DOCKER_IMAGE }}" =~ (xhttp|goxhttp|ws) ]]; then
-          # 获取应用路由
-          ROUTE=$(cf app ${{ env.APP_NAME }} | grep "routes:" | awk '{print $2}')
-          if [ -n "$ROUTE" ]; then
-            echo "设置 DOMAIN 环境变量为: $ROUTE"
-            cf set-env ${{ env.APP_NAME }} DOMAIN "$ROUTE"
-          else
-            echo "⚠️ 未找到应用路由，无法设置 DOMAIN,请手动将节点里的address、host和sni改为应用域名"
-          fi
-        fi
+            if [ "$DEPLOY_SUCCESS" = true ]; then
+                echo "🎉🎉🎉 部署成功! 应用 $APP_NAME 正常运行。"
+                # 导出最终变量
+                echo "FINAL_APP_NAME=$APP_NAME" >> $GITHUB_ENV
+                echo "FINAL_ORG=$ORG" >> $GITHUB_ENV
+                echo "FINAL_SPACE=$SPACE" >> $GITHUB_ENV
+                break # 成功，退出主循环
+            else
+                # 如果是启动失败，增加尝试次数，进行下一次循环
+                ATTEMPTS=$((ATTEMPTS+1))
+                # 注意：失败时的清理操作已在应用状态检查的 break 语句中处理
+            fi
+        done
         
-    - name: Restage application
-      run: |
-        cf restage ${{ env.APP_NAME }}
+        # 最终检查和退出
+        if [ "$DEPLOY_SUCCESS" = false ]; then
+            echo "🚨🚨🚨 经过 ${{ env.MAX_ATTEMPTS }} 次尝试，US(free) 区域部署最终失败。"
+            echo "伙计,没资源了,部署失败,请明天早上8:20至9:00再尝试部署。"
+            exit 1
+        fi
 
-    - name: Verify deployment
-      run: |
-        cf app ${{ env.APP_NAME }}
-        echo "Deployment completed successfully!"
-
-    - name: 详细部署信息
+    - name: 详细部署信息 (成功) 🎊
+      # 仅在部署成功，且 FINAL_APP_NAME 已设置时运行
+      if: success() && env.FINAL_APP_NAME != ''
       run: |
         echo "🚀 部署完成！详细信息如下："
-        echo "区域(Region): ${{ github.event.inputs.region }}"
-        echo "组织(ORG): ${{ env.ORG }}"
-        echo "空间(SPACE): ${{ env.SPACE }}"
-        echo "应用名称(App Name): ${{ env.APP_NAME }}"
+        echo "✅ 成功部署区域(Region): ${{ env.REGION_KEY }}"
+        echo "组织(ORG): ${{ env.FINAL_ORG }}"
+        echo "空间(SPACE): ${{ env.FINAL_SPACE }}"
+        echo "应用名称(App Name): ${{ env.FINAL_APP_NAME }}"
+
+        # 重新登录以确保环境正确
+        cf login -a ${{ env.CF_API }} -u "${{ secrets.EMAIL }}" -p "${{ secrets.PASSWORD }}" -o "${{ env.FINAL_ORG }}" -s "${{ env.FINAL_SPACE }}"
 
         # 获取应用路由
-        ROUTE=$(cf app ${{ env.APP_NAME }} | grep "routes:" | awk '{print $2}')
+        ROUTE=$(cf app ${{ env.FINAL_APP_NAME }} | grep "routes:" | awk '{print $2}')
         if [ -n "$ROUTE" ]; then
           echo "应用 URL (APP_URL): https://$ROUTE"
         else
